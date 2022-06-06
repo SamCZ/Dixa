@@ -12,6 +12,8 @@
 #include <D3D11.h>
 #include <d3dcompiler.h>
 
+#include "Dixa/Dixa.hpp"
+
 const char* shader_blit = R"(
 struct FullScreenQuadOutput
 {
@@ -34,9 +36,14 @@ FullScreenQuadOutput MainVS(uint id : SV_VertexID)
 	return OUT;
 }
 
+cbuffer Test
+{
+	float4 color;
+};
+
 float4 MainPS(FullScreenQuadOutput IN) : SV_Target
 {
-	return float4(0.0, 1.0, 0.0, 1.0);
+	return float4(color.xyz, 1.0);
 }
 
 )";
@@ -53,7 +60,7 @@ GLFWwindow* CreateWindowDX(int& w, int& h)
 	glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 	glfwWindowHint(GLFW_REFRESH_RATE, GLFW_DONT_CARE);
 
-	glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+	glfwWindowHint(GLFW_MAXIMIZED, GLFW_FALSE);
 
 	auto window = glfwCreateWindow(w, h, "Test DX11 App", nullptr, nullptr);
 
@@ -155,7 +162,7 @@ bool InitD3BackBuffer(ID3D11Device* device, IDXGISwapChain* swapChain, ID3D11Tex
 	return true;
 }
 
-HRESULT CompileShaderFromString(_In_ const std::string& shaderSource, _In_ const std::string& name, _In_ const D3D_SHADER_MACRO* macros, _In_ ID3DInclude* include, _In_ LPCSTR entryPoint, _In_ LPCSTR profile, _Outptr_ ID3DBlob** blob)
+HRESULT CompileShaderFromString(const std::string& shaderSource, const std::string& name, const bool debug, const D3D_SHADER_MACRO* macros, _In_ ID3DInclude* include, _In_ LPCSTR entryPoint, _In_ LPCSTR profile, _Outptr_ ID3DBlob** blob)
 {
 	if (!entryPoint || !profile || !blob)
 		return E_INVALIDARG;
@@ -163,15 +170,13 @@ HRESULT CompileShaderFromString(_In_ const std::string& shaderSource, _In_ const
 	*blob = nullptr;
 
 	UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#if defined( DEBUG ) || defined( _DEBUG )
-	flags |= D3DCOMPILE_DEBUG;
-        flags |= D3DCOMPILE_PREFER_FLOW_CONTROL;
-        flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
 
-	flags |= D3DCOMPILE_DEBUG;
-	flags |= D3DCOMPILE_PREFER_FLOW_CONTROL;
-	flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
+	if (debug)
+	{
+		flags |= D3DCOMPILE_DEBUG;
+		flags |= D3DCOMPILE_PREFER_FLOW_CONTROL;
+		flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
+	}
 
 	ID3DBlob* shaderBlob = nullptr;
 	ID3DBlob* errorBlob = nullptr;
@@ -194,6 +199,19 @@ HRESULT CompileShaderFromString(_In_ const std::string& shaderSource, _In_ const
 
 	return hr;
 }
+
+struct vec4
+{
+	float x, y, z, w;
+};
+
+template<typename T>
+constexpr T IsAligned(T val, uint64_t alignment)
+{
+	return !((uint64_t)val & (alignment - 1));
+}
+
+static_assert(IsAligned(sizeof(vec4), 12), "vec3 is not aligned to 16!");
 
 int main()
 {
@@ -249,7 +267,7 @@ int main()
 	viewport.MaxDepth = 1;
 
 	ID3DBlob* vsShaderBlob = nullptr;
-	HRESULT hr = CompileShaderFromString(shader_blit, "VS", nullptr, nullptr, "MainVS", "vs_5_0", &vsShaderBlob);
+	HRESULT hr = CompileShaderFromString(shader_blit, "VS", false, nullptr, nullptr, "MainVS", "vs_5_0", &vsShaderBlob);
 
 	if(FAILED(hr))
 	{
@@ -260,7 +278,7 @@ int main()
 	}
 
 	ID3DBlob* psShaderBlob = nullptr;
-	HRESULT hr2 = CompileShaderFromString(shader_blit, "PS", nullptr, nullptr, "MainPS", "ps_5_0", &psShaderBlob);
+	HRESULT hr2 = CompileShaderFromString(shader_blit, "PS", false, nullptr, nullptr, "MainPS", "ps_5_0", &psShaderBlob);
 
 	if(FAILED(hr2))
 	{
@@ -315,9 +333,54 @@ int main()
 		0.2f, 0.6f, 0.8f, 1.0f
 	};
 
+
+	ID3D11Buffer* cbuffer;
+	D3D11_BUFFER_DESC constantBufferDesc = {};
+	constantBufferDesc.ByteWidth = sizeof(vec4);
+	constantBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	constantBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+	constantBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	if (FAILED(d11Device->CreateBuffer(&constantBufferDesc, nullptr, &cbuffer)))
+	{
+		std::cout << "Could not create buffer" << std::endl;
+		glfwDestroyWindow(window);
+		glfwTerminate();
+		exit(-1);
+	}
+
+	d11Device->CreateShaderResourceView()
+
+	double prevTime = glfwGetTime();
+	double accumulator = 0;
+	int frameCounter = 0;
+
 	while(!glfwWindowShouldClose(window))
 	{
+		double currentTime = glfwGetTime();
+		double delta = currentTime - prevTime;
+		prevTime = currentTime;
+
+		if (accumulator >= 1.0f)
+		{
+			std::cout << "Frame time: " << delta << ", FPS: " << frameCounter << std::endl;
+			accumulator = 0;
+			frameCounter = 0;
+		}
+		accumulator += delta;
+		frameCounter++;
+
 		glfwPollEvents();
+
+		{
+			vec4 vec = { 0, 1, 2, 1 };
+
+			D3D11_MAPPED_SUBRESOURCE mappedData;
+			if (SUCCEEDED(d11DeviceContext->Map(cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedData)))
+			{
+				memcpy(mappedData.pData, &vec, sizeof(vec));
+			}
+			d11DeviceContext->Unmap(cbuffer, 0);
+		}
 
 		d11DeviceContext->OMSetRenderTargets(1, &backBufferView, nullptr);
 
@@ -330,12 +393,14 @@ int main()
 		d11DeviceContext->VSSetShader(vs, nullptr, 0);
 		d11DeviceContext->PSSetShader(ps, nullptr, 0);
 
+		d11DeviceContext->PSSetConstantBuffers(0, 1, &cbuffer);
+
 		d11DeviceContext->RSSetState(rasterizerState);
 		d11DeviceContext->Draw(4, 0);
 
 		d11DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
 
-		swapChain->Present(1, 0);
+		swapChain->Present(0, 0);
 	}
 
 	rasterizerState->Release();

@@ -3,6 +3,10 @@ project(DX11_PerfTests)
 
 set(CMAKE_CXX_STANDARD 20)
 
+if (MSVC)
+	add_link_options(/DEBUG:FULL)
+endif()
+
 add_subdirectory(lib)
 
 file(GLOB_RECURSE PROJECT_SOURCE src/*.hpp src/*.cpp)
